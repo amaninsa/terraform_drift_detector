@@ -12,7 +12,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/terraform-drift-detector/terraform_drift_detector/internal/models"
-	"github.com/terraform-drift-detector/terraform_drift_detector/internal/providers"
+	"github.com/terraform-drift-detector/terraform_drift_detector/internal/cloudtypes"
 )
 
 // Adapter fetches AWS resources via the AWS SDK.
@@ -46,8 +46,8 @@ func NewAdapterWithClients(region string, ec2Client *ec2.Client, s3Client *s3.Cl
 
 func (a *Adapter) Name() string { return "aws" }
 
-func (a *Adapter) FetchResource(ctx context.Context, ref providers.ResourceRef) (*models.Resource, error) {
-	results, err := a.FetchResources(ctx, []providers.ResourceRef{ref})
+func (a *Adapter) FetchResource(ctx context.Context, ref cloudtypes.ResourceRef) (*models.Resource, error) {
+	results, err := a.FetchResources(ctx, []cloudtypes.ResourceRef{ref})
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func (a *Adapter) FetchResource(ctx context.Context, ref providers.ResourceRef) 
 	return res, nil
 }
 
-func (a *Adapter) FetchResources(ctx context.Context, refs []providers.ResourceRef) (map[string]*models.Resource, error) {
+func (a *Adapter) FetchResources(ctx context.Context, refs []cloudtypes.ResourceRef) (map[string]*models.Resource, error) {
 	out := make(map[string]*models.Resource, len(refs))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -66,7 +66,7 @@ func (a *Adapter) FetchResources(ctx context.Context, refs []providers.ResourceR
 
 	for _, ref := range refs {
 		wg.Add(1)
-		go func(ref providers.ResourceRef) {
+		go func(ref cloudtypes.ResourceRef) {
 			defer wg.Done()
 			res, err := a.fetchOne(ctx, ref)
 			if err != nil {
@@ -92,7 +92,7 @@ func (a *Adapter) FetchResources(ctx context.Context, refs []providers.ResourceR
 	return out, nil
 }
 
-func (a *Adapter) fetchOne(ctx context.Context, ref providers.ResourceRef) (*models.Resource, error) {
+func (a *Adapter) fetchOne(ctx context.Context, ref cloudtypes.ResourceRef) (*models.Resource, error) {
 	switch ref.Type {
 	case "aws_instance":
 		return a.fetchInstance(ctx, ref)
@@ -109,7 +109,7 @@ func (a *Adapter) fetchOne(ctx context.Context, ref providers.ResourceRef) (*mod
 	}
 }
 
-func (a *Adapter) fetchInstance(ctx context.Context, ref providers.ResourceRef) (*models.Resource, error) {
+func (a *Adapter) fetchInstance(ctx context.Context, ref cloudtypes.ResourceRef) (*models.Resource, error) {
 	out, err := a.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 		InstanceIds: []string{ref.CloudID},
 	})
@@ -124,7 +124,7 @@ func (a *Adapter) fetchInstance(ctx context.Context, ref providers.ResourceRef) 
 	return nil, fmt.Errorf("instance %s not found", ref.CloudID)
 }
 
-func instanceToResource(ref providers.ResourceRef, inst ec2types.Instance, region string) *models.Resource {
+func instanceToResource(ref cloudtypes.ResourceRef, inst ec2types.Instance, region string) *models.Resource {
 	sgIDs := make([]string, 0, len(inst.SecurityGroups))
 	for _, sg := range inst.SecurityGroups {
 		if sg.GroupId != nil {
@@ -151,7 +151,7 @@ func instanceToResource(ref providers.ResourceRef, inst ec2types.Instance, regio
 	}
 }
 
-func (a *Adapter) fetchSecurityGroup(ctx context.Context, ref providers.ResourceRef) (*models.Resource, error) {
+func (a *Adapter) fetchSecurityGroup(ctx context.Context, ref cloudtypes.ResourceRef) (*models.Resource, error) {
 	out, err := a.ec2.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
 		GroupIds: []string{ref.CloudID},
 	})
@@ -180,7 +180,7 @@ func (a *Adapter) fetchSecurityGroup(ctx context.Context, ref providers.Resource
 	}, nil
 }
 
-func (a *Adapter) fetchVPC(ctx context.Context, ref providers.ResourceRef) (*models.Resource, error) {
+func (a *Adapter) fetchVPC(ctx context.Context, ref cloudtypes.ResourceRef) (*models.Resource, error) {
 	out, err := a.ec2.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
 		VpcIds: []string{ref.CloudID},
 	})
@@ -209,7 +209,7 @@ func (a *Adapter) fetchVPC(ctx context.Context, ref providers.ResourceRef) (*mod
 	}, nil
 }
 
-func (a *Adapter) fetchSubnet(ctx context.Context, ref providers.ResourceRef) (*models.Resource, error) {
+func (a *Adapter) fetchSubnet(ctx context.Context, ref cloudtypes.ResourceRef) (*models.Resource, error) {
 	out, err := a.ec2.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
 		SubnetIds: []string{ref.CloudID},
 	})
@@ -239,7 +239,7 @@ func (a *Adapter) fetchSubnet(ctx context.Context, ref providers.ResourceRef) (*
 	}, nil
 }
 
-func (a *Adapter) fetchS3Bucket(ctx context.Context, ref providers.ResourceRef) (*models.Resource, error) {
+func (a *Adapter) fetchS3Bucket(ctx context.Context, ref cloudtypes.ResourceRef) (*models.Resource, error) {
 	bucket := ref.CloudID
 	_, err := a.s3.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
 	if err != nil {
@@ -286,4 +286,144 @@ func ec2Tags(tags []ec2types.Tag) map[string]string {
 		out[aws.ToString(t.Key)] = aws.ToString(t.Value)
 	}
 	return out
+}
+
+func (a *Adapter) ListResources(ctx context.Context, resourceTypes []string, opts cloudtypes.ListOptions) ([]*models.Resource, error) {
+	typeSet := map[string]bool{}
+	for _, t := range resourceTypes {
+		typeSet[t] = true
+	}
+	var out []*models.Resource
+	for _, typ := range resourceTypes {
+		if !typeSet[typ] {
+			continue
+		}
+		switch typ {
+		case "aws_instance":
+			items, err := a.listInstances(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, items...)
+		case "aws_security_group":
+			items, err := a.listSecurityGroups(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, items...)
+		case "aws_s3_bucket":
+			items, err := a.listBuckets(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, items...)
+		case "aws_vpc":
+			items, err := a.listVPCs(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, items...)
+		case "aws_subnet":
+			items, err := a.listSubnets(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, items...)
+		}
+	}
+	return out, nil
+}
+
+func (a *Adapter) listInstances(ctx context.Context) ([]*models.Resource, error) {
+	out, err := a.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{})
+	if err != nil {
+		return nil, err
+	}
+	var res []*models.Resource
+	for _, r := range out.Reservations {
+		for _, inst := range r.Instances {
+			if inst.InstanceId == nil || string(inst.State.Name) == "terminated" {
+				continue
+			}
+			ref := cloudtypes.ResourceRef{Address: *inst.InstanceId, Type: "aws_instance", CloudID: *inst.InstanceId}
+			res = append(res, instanceToResource(ref, inst, a.region))
+		}
+	}
+	return res, nil
+}
+
+func (a *Adapter) listSecurityGroups(ctx context.Context) ([]*models.Resource, error) {
+	out, err := a.ec2.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{})
+	if err != nil {
+		return nil, err
+	}
+	var res []*models.Resource
+	for _, sg := range out.SecurityGroups {
+		if sg.GroupId == nil {
+			continue
+		}
+		ref := cloudtypes.ResourceRef{Address: *sg.GroupId, Type: "aws_security_group", CloudID: *sg.GroupId}
+		r, err := a.fetchSecurityGroup(ctx, ref)
+		if err == nil {
+			res = append(res, r)
+		}
+	}
+	return res, nil
+}
+
+func (a *Adapter) listBuckets(ctx context.Context) ([]*models.Resource, error) {
+	out, err := a.s3.ListBuckets(ctx, &s3.ListBucketsInput{})
+	if err != nil {
+		return nil, err
+	}
+	var res []*models.Resource
+	for _, b := range out.Buckets {
+		if b.Name == nil {
+			continue
+		}
+		ref := cloudtypes.ResourceRef{Address: *b.Name, Type: "aws_s3_bucket", CloudID: *b.Name}
+		r, err := a.fetchS3Bucket(ctx, ref)
+		if err == nil {
+			res = append(res, r)
+		}
+	}
+	return res, nil
+}
+
+func (a *Adapter) listVPCs(ctx context.Context) ([]*models.Resource, error) {
+	out, err := a.ec2.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{})
+	if err != nil {
+		return nil, err
+	}
+	var res []*models.Resource
+	for _, vpc := range out.Vpcs {
+		if vpc.VpcId == nil {
+			continue
+		}
+		ref := cloudtypes.ResourceRef{Address: *vpc.VpcId, Type: "aws_vpc", CloudID: *vpc.VpcId}
+		r, err := a.fetchVPC(ctx, ref)
+		if err == nil {
+			res = append(res, r)
+		}
+	}
+	return res, nil
+}
+
+func (a *Adapter) listSubnets(ctx context.Context) ([]*models.Resource, error) {
+	out, err := a.ec2.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{})
+	if err != nil {
+		return nil, err
+	}
+	var res []*models.Resource
+	for _, subnet := range out.Subnets {
+		if subnet.SubnetId == nil {
+			continue
+		}
+		ref := cloudtypes.ResourceRef{Address: *subnet.SubnetId, Type: "aws_subnet", CloudID: *subnet.SubnetId}
+		r, err := a.fetchSubnet(ctx, ref)
+		if err == nil {
+			res = append(res, r)
+		}
+	}
+	return res, nil
 }

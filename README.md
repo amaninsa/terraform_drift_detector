@@ -1,151 +1,144 @@
 # Terraform Drift Detector
 
-A cloud-agnostic platform that continuously compares **Terraform state files** against **live cloud infrastructure** to identify configuration drift — without running `terraform plan` or `terraform apply`.
+An advanced, cloud-agnostic platform that continuously compares **Terraform state** against **live cloud infrastructure** to identify configuration drift — without `terraform plan` or `terraform apply`.
+
+```
+ ██████╗ ██████╗ ██╗███████╗████████╗
+ ██╔══██╗██╔══██╗██║██╔════╝╚══██╔══╝
+ ██║  ██║██████╔╝██║█████╗     ██║
+ Terraform Drift Detector — infrastructure drift, zero terraform plan
+```
 
 ## Features
 
-- **State parsing** — Reads Terraform state v4 JSON (local files; remote backends planned)
-- **Cloud comparison** — Fetches live resource metadata from cloud provider APIs
-- **Normalization** — Maps both sides into a common model with configurable ignore rules
-- **Drift detection** — Identifies missing resources, modified attributes, and tag changes
-- **Multiple interfaces** — CLI (JSON/table), REST API, and web dashboard
-- **Persistence** — SQLite storage for scan history and reporting
-
-## Supported Providers (v1)
-
-| Provider | Resource Types |
-|----------|----------------|
-| AWS | `aws_instance`, `aws_s3_bucket`, `aws_security_group`, `aws_vpc`, `aws_subnet` |
+| Feature | Description |
+|---------|-------------|
+| **Multi-cloud** | AWS, Azure, and GCP adapters |
+| **State backends** | Local files and S3 remote state |
+| **Drift types** | Missing, modified, tag-only, unmanaged, fetch errors |
+| **Unmanaged detection** | Find cloud resources not in Terraform state |
+| **Scheduler** | In-process cron scheduling via config |
+| **Webhooks** | Slack/HTTP notifications on drift |
+| **Rich CLI** | Colorized output, spinners, summary boxes |
+| **Dashboard** | Web UI with on-demand scan trigger |
+| **REST API** | List scans, trigger scans, export JSON |
 
 ## Quick Start
 
-### Build
-
 ```bash
-go build -o drift ./cmd/drift
-```
+make build
 
-### Run a Scan
+# Rich CLI output (default)
+./drift scan --state-file ./terraform.tfstate --provider aws --region us-east-1
 
-```bash
+# S3 remote state + unmanaged detection
 ./drift scan \
-  --state-file ./testdata/aws/terraform.tfstate \
-  --provider aws \
-  --region us-east-1 \
-  --output json
+  --state-bucket my-tf-state \
+  --state-key prod/terraform.tfstate \
+  --state-region us-east-1 \
+  --provider aws --region us-east-1 \
+  --detect-unmanaged \
+  --persist
+
+# Config-driven scan
+./drift --config configs/examples/drift.yaml scan --workspace prod
+
+# Start server + scheduler + dashboard
+./drift --config configs/examples/drift.yaml serve
 ```
 
-Use a mock-free scan against real AWS by configuring credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, or instance profile) and pointing at your state file.
-
-### Persist Results & View Dashboard
+## CLI Commands
 
 ```bash
-./drift scan --state-file ./terraform.tfstate --provider aws --region us-east-1 --persist
-./drift serve --port 8080 --db drift.db
+drift scan          # Run drift scan (output: rich, json, table)
+drift report list   # List persisted scans
+drift report show   # Show scan JSON
+drift serve         # API + dashboard + scheduler
+drift workspaces    # List configured workspaces
+drift schedule list # List cron schedules
+drift version       # Version info
 ```
 
-Open [http://localhost:8080](http://localhost:8080) for the dashboard.
+### Scan flags
 
-### List Reports (CLI)
+| Flag | Description |
+|------|-------------|
+| `--state-file` | Local Terraform state path |
+| `--state-bucket` / `--state-key` | S3 remote state |
+| `--config` | YAML config file |
+| `--workspace` | Workspace name from config |
+| `--provider` | `aws`, `azure`, `gcp` |
+| `--detect-unmanaged` | Find resources not in state |
+| `--output rich` | Colorized table output (default) |
+| `--persist` | Save to SQLite |
+| `--no-color` | Plain output |
 
-```bash
-./drift report list
-./drift report show <scan-id>
+## Supported Resources
+
+| Provider | Resource Types |
+|----------|----------------|
+| **AWS** | `aws_instance`, `aws_s3_bucket`, `aws_security_group`, `aws_vpc`, `aws_subnet` |
+| **Azure** | `azurerm_resource_group`, `azurerm_virtual_network`, `azurerm_subnet`, `azurerm_storage_account` |
+| **GCP** | `google_compute_instance`, `google_storage_bucket`, `google_compute_network` |
+
+## Configuration
+
+```yaml
+server:
+  port: 8080
+  database: ./drift.db
+
+webhooks:
+  - url: https://hooks.slack.com/services/...
+    on_drift: true
+
+workspaces:
+  - name: prod
+    provider: aws
+    region: us-east-1
+    detect_unmanaged: true
+    state:
+      type: s3
+      bucket: my-tf-state
+      key: prod/terraform.tfstate
+      region: us-east-1
+
+schedules:
+  - workspace: prod
+    cron: "0 */6 * * *"
 ```
+
+## API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/scans` | List scans |
+| POST | `/api/v1/scans` | Trigger scan `{"workspace":"prod"}` |
+| GET | `/api/v1/scans/{id}` | Full report |
+| GET | `/api/v1/workspaces` | List workspaces |
 
 ## Architecture
 
 ```
-Terraform State ──► State Parser ──► Resource Mapper ──► Cloud Adapter
-                                                              │
-                                                              ▼
-                                                         Normalizer
-                                                              │
-                         Drift Report ◄── Diff Engine ◄───────┘
-                              │
-                    ┌─────────┼─────────┐
-                    ▼         ▼         ▼
-                  CLI       API     Dashboard
+drift.yaml ──► Config ──► Scheduler (cron)
+                │
+Terraform State ──► State Loader (local/S3) ──► Scan Runner
+                                                      │
+                                              Cloud Adapter (AWS/Azure/GCP)
+                                                      │
+                                              Normalizer ──► Diff Engine
+                                                      │
+                                    ┌─────────────────┼─────────────────┐
+                                    ▼                 ▼                 ▼
+                                  CLI (rich)        REST API         Webhooks
 ```
-
-## Drift Types
-
-| Type | Description |
-|------|-------------|
-| `missing` | Resource in state but not found in cloud |
-| `modified` | Attributes differ from state |
-| `tag_only` | Only tags differ |
-| `in_sync` | Matches Terraform state |
-| `fetch_error` | Could not fetch or unsupported type |
-
-## Example JSON Output
-
-```json
-{
-  "scan_id": "…",
-  "workspace": "default",
-  "summary": {
-    "total_resources": 3,
-    "drifted": 1,
-    "modified": 1,
-    "in_sync": 2
-  },
-  "items": [
-    {
-      "address": "aws_instance.web",
-      "drift_type": "modified",
-      "diff": [
-        {
-          "path": "instance_type",
-          "expected": "t3.micro",
-          "actual": "t3.small"
-        }
-      ]
-    }
-  ]
-}
-```
-
-## Configuration
-
-See [`configs/examples/drift.yaml`](configs/examples/drift.yaml) for workspace and schedule examples.
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/scans` | List recent scans |
-| GET | `/api/v1/scans/{id}` | Full drift report |
-| GET | `/api/v1/scans/{id}/json` | JSON download |
-
-## Project Layout
-
-```
-cmd/drift/           CLI entrypoint
-internal/
-  state/             Terraform state parser
-  mapper/            Resource type → cloud fetch mapping
-  providers/         Cloud adapters (AWS, mock)
-  normalize/         Attribute normalization
-  diff/              Drift comparison engine
-  scan/              Scan orchestration
-  store/             SQLite persistence
-  api/               REST API
-  cli/               CLI commands
-web/                 Dashboard static files
-testdata/            Fixture state files
-```
-
-## Extending
-
-1. Add a mapping entry in `internal/mapper/registry.go`
-2. Implement fetch logic in the provider adapter
-3. Add ignore rules for computed attributes in `internal/normalize/normalize.go`
 
 ## Development
 
 ```bash
 go test ./...
+make build
+make scan    # Demo scan against fixture state
 ```
 
 ## License

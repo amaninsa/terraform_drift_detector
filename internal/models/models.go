@@ -84,11 +84,24 @@ type DriftReport struct {
 
 // ScanOptions configures a drift scan run.
 type ScanOptions struct {
-	Workspace      string
-	StateFile      string
-	Provider       string
-	Region         string
+	Workspace       string
+	StateFile       string
+	State           StateSource
+	Provider        string
+	Region          string
+	SubscriptionID  string
+	ProjectID       string
 	DetectUnmanaged bool
-	Concurrency    int
-	IgnoreRules    []string
+	Concurrency     int
+	IgnoreRules     []string
+	WebhookURLs     []string
+}
+
+// StateSource describes where Terraform state is stored.
+type StateSource struct {
+	Type   string `yaml:"type" json:"type"`
+	Path   string `yaml:"path" json:"path,omitempty"`
+	Bucket string `yaml:"bucket" json:"bucket,omitempty"`
+	Key    string `yaml:"key" json:"key,omitempty"`
+	Region string `yaml:"region" json:"region,omitempty"`
 }

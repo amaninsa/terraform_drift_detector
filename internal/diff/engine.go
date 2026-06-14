@@ -204,3 +204,17 @@ func FetchErrorItem(expected *models.Resource, err error) models.DriftItem {
 		Expected:   expected,
 	}
 }
+
+// UnmanagedItem creates a drift item for a cloud resource not in Terraform state.
+func UnmanagedItem(actual *models.Resource) models.DriftItem {
+	return models.DriftItem{
+		ResourceID: actual.CloudID,
+		Address:    "(unmanaged)",
+		Type:       actual.Type,
+		Provider:   actual.Provider,
+		CloudID:    actual.CloudID,
+		DriftType:  models.DriftTypeUnmanaged,
+		Message:    "resource exists in cloud but is not managed by Terraform state",
+		Actual:     actual,
+	}
+}

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/terraform-drift-detector/terraform_drift_detector/internal/providers"
+	"github.com/terraform-drift-detector/terraform_drift_detector/internal/cloudtypes"
 	"github.com/terraform-drift-detector/terraform_drift_detector/internal/state"
 )
 
@@ -55,6 +55,48 @@ func DefaultRegistry() *Registry {
 				TagSource:   "tags",
 				CompareKeys: []string{"cidr_block", "vpc_id", "availability_zone", "map_public_ip_on_launch"},
 			},
+			"azurerm_resource_group": {
+				Provider:    "azure",
+				IDAttribute: "id",
+				TagSource:   "tags",
+				CompareKeys: []string{"name", "location"},
+			},
+			"azurerm_virtual_network": {
+				Provider:    "azure",
+				IDAttribute: "id",
+				TagSource:   "tags",
+				CompareKeys: []string{"name", "location", "address_space"},
+			},
+			"azurerm_subnet": {
+				Provider:    "azure",
+				IDAttribute: "id",
+				TagSource:   "tags",
+				CompareKeys: []string{"name", "address_prefixes", "virtual_network_name"},
+			},
+			"azurerm_storage_account": {
+				Provider:    "azure",
+				IDAttribute: "id",
+				TagSource:   "tags",
+				CompareKeys: []string{"name", "location", "account_tier", "account_replication_type"},
+			},
+			"google_compute_instance": {
+				Provider:    "google",
+				IDAttribute: "id",
+				TagSource:   "labels",
+				CompareKeys: []string{"name", "zone", "machine_type"},
+			},
+			"google_storage_bucket": {
+				Provider:    "google",
+				IDAttribute: "name",
+				TagSource:   "labels",
+				CompareKeys: []string{"name", "location"},
+			},
+			"google_compute_network": {
+				Provider:    "google",
+				IDAttribute: "id",
+				TagSource:   "labels",
+				CompareKeys: []string{"name", "auto_create_subnetworks"},
+			},
 		},
 	}
 }
@@ -67,6 +109,9 @@ func (r *Registry) Get(resourceType string) (Mapping, bool) {
 
 // SupportedTypes returns all mapped resource types for a provider.
 func (r *Registry) SupportedTypes(provider string) []string {
+	if provider == "gcp" {
+		provider = "google"
+	}
 	var types []string
 	for typ, m := range r.mappings {
 		if m.Provider == provider {
@@ -83,7 +128,7 @@ func (r *Registry) IsSupported(resourceType string) bool {
 }
 
 // ToResourceRef converts a state resource to a cloud fetch reference.
-func ToResourceRef(res state.ManagedResource, mapping Mapping, region string) providers.ResourceRef {
+func ToResourceRef(res state.ManagedResource, mapping Mapping, region string) cloudtypes.ResourceRef {
 	cloudID := state.CloudID(res)
 	if mapping.IDAttribute != "" {
 		if v, ok := res.Attributes[mapping.IDAttribute]; ok {
@@ -92,7 +137,7 @@ func ToResourceRef(res state.ManagedResource, mapping Mapping, region string) pr
 			}
 		}
 	}
-	return providers.ResourceRef{
+	return cloudtypes.ResourceRef{
 		Address: res.Address,
 		Type:    res.Type,
 		CloudID: cloudID,
@@ -112,6 +157,10 @@ func ProviderFromType(resourceType string) string {
 // ValidateProvider ensures the resource belongs to the expected provider.
 func ValidateProvider(res state.ManagedResource, expectedProvider string) error {
 	prefix := ProviderFromType(res.Type)
+	// google_* resources use "google" prefix but provider name is often "gcp"
+	if expectedProvider == "gcp" && prefix == "google" {
+		return nil
+	}
 	if expectedProvider != "" && prefix != expectedProvider {
 		return fmt.Errorf("resource %s provider %s does not match scan provider %s", res.Address, prefix, expectedProvider)
 	}

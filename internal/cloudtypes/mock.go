@@ -1,4 +1,4 @@
-package providers
+package cloudtypes
 
 import (
 	"context"
@@ -33,6 +33,28 @@ func (m *MockAdapter) FetchResources(ctx context.Context, refs []ResourceRef) (m
 			cp := *res
 			out[ref.Address] = &cp
 		}
+	}
+	return out, nil
+}
+
+func (m *MockAdapter) ListResources(ctx context.Context, resourceTypes []string, opts ListOptions) ([]*models.Resource, error) {
+	typeSet := map[string]bool{}
+	for _, t := range resourceTypes {
+		typeSet[t] = true
+	}
+	var out []*models.Resource
+	seen := map[string]bool{}
+	for _, res := range m.Resources {
+		if !typeSet[res.Type] {
+			continue
+		}
+		key := res.Type + ":" + res.CloudID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		cp := *res
+		out = append(out, &cp)
 	}
 	return out, nil
 }
