@@ -1,0 +1,20 @@
+server:
+  port: 8080
+  database: ./drift.db
+
+workspaces:
+  - name: prod
+    state:
+      type: local
+      path: ./terraform.tfstate
+    providers:
+      aws:
+        region: us-east-1
+
+schedules:
+  - workspace: prod
+    cron: "0 */6 * * *"
+
+drift:
+  detect_unmanaged: false
+  concurrency: 10

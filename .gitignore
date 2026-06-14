@@ -1,0 +1,5 @@
+/bin/
+/drift
+*.db
+*.test
+.DS_Store

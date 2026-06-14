@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Terraform Drift Detector</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --border: #2d3a4f;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --danger: #ef4444;
+      --warn: #f59e0b;
+      --ok: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 1.5rem 2rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
+    .subtitle { color: var(--muted); font-size: 0.95rem; }
+    main { padding: 2rem; max-width: 1200px; margin: 0 auto; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+    }
+    .card .label { color: var(--muted); font-size: 0.85rem; }
+    .card .value { font-size: 1.75rem; font-weight: 700; margin-top: 0.25rem; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    tr:hover { background: rgba(59, 130, 246, 0.06); cursor: pointer; }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge.missing { background: rgba(239,68,68,0.15); color: var(--danger); }
+    .badge.modified { background: rgba(245,158,11,0.15); color: var(--warn); }
+    .badge.tag_only { background: rgba(59,130,246,0.15); color: var(--accent); }
+    .badge.in_sync { background: rgba(34,197,94,0.15); color: var(--ok); }
+    .badge.fetch_error { background: rgba(139,156,179,0.15); color: var(--muted); }
+    #detail {
+      margin-top: 2rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      display: none;
+    }
+    pre {
+      background: #0b1017;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      overflow: auto;
+      font-size: 0.85rem;
+    }
+    .empty { color: var(--muted); padding: 2rem; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Terraform Drift Detector</h1>
+    <p class="subtitle">Compare Terraform state against live cloud infrastructure</p>
+  </header>
+  <main>
+    <div class="cards" id="summary-cards">
+      <div class="card"><div class="label">Scans</div><div class="value" id="stat-scans">-</div></div>
+      <div class="card"><div class="label">Latest Drifted</div><div class="value" id="stat-drifted">-</div></div>
+      <div class="card"><div class="label">Missing</div><div class="value" id="stat-missing">-</div></div>
+      <div class="card"><div class="label">Modified</div><div class="value" id="stat-modified">-</div></div>
+    </div>
+
+    <h2>Recent Scans</h2>
+    <div id="scan-table-wrap"></div>
+
+    <div id="detail">
+      <h2>Scan Detail</h2>
+      <div id="detail-meta"></div>
+      <h3>Drift Items</h3>
+      <div id="detail-items"></div>
+    </div>
+  </main>
+  <script>
+    function badge(type) {
+      return `<span class="badge ${type}">${type.replace('_', ' ')}</span>`;
+    }
+
+    async function loadScans() {
+      const res = await fetch('/api/v1/scans?limit=20');
+      const scans = await res.json();
+      const wrap = document.getElementById('scan-table-wrap');
+
+      document.getElementById('stat-scans').textContent = scans.length;
+      if (scans.length) {
+        const latest = scans[0].summary;
+        document.getElementById('stat-drifted').textContent = latest.drifted;
+        document.getElementById('stat-missing').textContent = latest.missing;
+        document.getElementById('stat-modified').textContent = latest.modified;
+      }
+
+      if (!scans.length) {
+        wrap.innerHTML = '<div class="empty">No scans yet. Run <code>drift scan --persist</code> to populate results.</div>';
+        return;
+      }
+
+      const rows = scans.map(s => `
+        <tr data-id="${s.scan_id}">
+          <td><code>${s.scan_id.slice(0,8)}…</code></td>
+          <td>${s.workspace}</td>
+          <td>${s.provider}</td>
+          <td>${s.summary.drifted}</td>
+          <td>${new Date(s.started_at).toLocaleString()}</td>
+        </tr>
+      `).join('');
+
+      wrap.innerHTML = `
+        <table>
+          <thead><tr><th>Scan</th><th>Workspace</th><th>Provider</th><th>Drifted</th><th>Started</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+
+      wrap.querySelectorAll('tr[data-id]').forEach(row => {
+        row.addEventListener('click', () => showScan(row.dataset.id));
+      });
+    }
+
+    async function showScan(id) {
+      const res = await fetch(`/api/v1/scans/${id}`);
+      const report = await res.json();
+      const detail = document.getElementById('detail');
+      detail.style.display = 'block';
+
+      document.getElementById('detail-meta').innerHTML = `
+        <p><strong>Scan ID:</strong> ${report.scan_id}</p>
+        <p><strong>Workspace:</strong> ${report.workspace} · <strong>Provider:</strong> ${report.provider} · <strong>Duration:</strong> ${report.duration}</p>
+        <p><strong>Summary:</strong> ${report.summary.drifted} drifted / ${report.summary.total_resources} total</p>
+      `;
+
+      const items = report.items.map(item => `
+        <tr>
+          <td>${item.address}</td>
+          <td>${item.type}</td>
+          <td>${badge(item.drift_type)}</td>
+          <td>${item.message || ''}</td>
+        </tr>
+      `).join('');
+
+      document.getElementById('detail-items').innerHTML = `
+        <table>
+          <thead><tr><th>Address</th><th>Type</th><th>Status</th><th>Message</th></tr></thead>
+          <tbody>${items}</tbody>
+        </table>
+        <h3>Full JSON</h3>
+        <pre>${JSON.stringify(report, null, 2)}</pre>
+      `;
+    }
+
+    loadScans().catch(err => {
+      document.getElementById('scan-table-wrap').innerHTML =
+        `<div class="empty">Failed to load scans: ${err.message}</div>`;
+    });
+  </script>
+</body>
+</html>
