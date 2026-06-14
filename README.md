@@ -141,6 +141,11 @@ make build
 make scan    # Demo scan against fixture state
 ```
 
+## Related Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — HLD, LLD, and system design
+- [configs/examples/drift.yaml](configs/examples/drift.yaml) — Configuration reference
+
 ## License
 
 See [LICENSE](LICENSE).
