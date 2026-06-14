@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Drift — Terraform Drift Detector</title>
+  <style>
+    :root {
+      --bg: #0a0e14;
+      --surface: #151b24;
+      --surface2: #1c2430;
+      --border: #2a3544;
+      --text: #e8eef5;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --danger: #ef4444;
+      --warn: #f59e0b;
+      --ok: #22c55e;
+      --purple: #a855f7;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    header { padding: 1.5rem 2rem; border-bottom: 1px solid var(--border); background: linear-gradient(135deg, #151b24 0%, #0f1724 100%); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+    h1 { margin: 0; font-size: 1.4rem; letter-spacing: -0.02em; }
+    .subtitle { color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem; }
+    main { padding: 2rem; max-width: 1280px; margin: 0 auto; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.25rem; }
+    .card .label { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .card .value { font-size: 1.8rem; font-weight: 700; margin-top: 0.25rem; }
+    .card.danger .value { color: var(--danger); }
+    .card.warn .value { color: var(--warn); }
+    .card.ok .value { color: var(--ok); }
+    .toolbar { display: flex; gap: 0.75rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+    button { background: var(--accent); color: white; border: none; border-radius: 8px; padding: 0.6rem 1.2rem; font-weight: 600; cursor: pointer; }
+    button:hover { filter: brightness(1.1); }
+    button.secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+    table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+    th { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; }
+    tr:hover { background: rgba(59,130,246,0.05); cursor: pointer; }
+    .badge { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
+    .badge.missing { background: rgba(239,68,68,0.15); color: var(--danger); }
+    .badge.modified { background: rgba(245,158,11,0.15); color: var(--warn); }
+    .badge.tag_only { background: rgba(59,130,246,0.15); color: var(--accent); }
+    .badge.unmanaged { background: rgba(168,85,247,0.15); color: var(--purple); }
+    .badge.in_sync { background: rgba(34,197,94,0.15); color: var(--ok); }
+    .badge.fetch_error { background: rgba(139,156,179,0.15); color: var(--muted); }
+    #detail { margin-top: 2rem; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; display: none; }
+    pre { background: #080c10; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow: auto; font-size: 0.8rem; max-height: 400px; }
+    .empty { color: var(--muted); padding: 3rem; text-align: center; }
+    select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 0.55rem 0.8rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>⬡ Drift Detector</h1>
+      <p class="subtitle">Terraform state vs live infrastructure</p>
+    </div>
+    <div class="toolbar" style="margin:0">
+      <select id="workspace-select"><option value="">All workspaces</option></select>
+      <button class="secondary" onclick="loadScans()">↻ Refresh</button>
+      <button onclick="triggerScan()">▶ Run Scan</button>
+    </div>
+  </header>
+  <main>
+    <div class="cards">
+      <div class="card"><div class="label">Scans</div><div class="value" id="stat-scans">-</div></div>
+      <div class="card danger"><div class="label">Drifted</div><div class="value" id="stat-drifted">-</div></div>
+      <div class="card warn"><div class="label">Missing</div><div class="value" id="stat-missing">-</div></div>
+      <div class="card"><div class="label">Unmanaged</div><div class="value" id="stat-unmanaged">-</div></div>
+      <div class="card ok"><div class="label">In Sync</div><div class="value" id="stat-insync">-</div></div>
+    </div>
+    <h2>Recent Scans</h2>
+    <div id="scan-table-wrap"></div>
+    <div id="detail">
+      <h2>Scan Detail</h2>
+      <div id="detail-meta"></div>
+      <h3>Drift Items</h3>
+      <div id="detail-items"></div>
+    </div>
+  </main>
+  <script>
+    function badge(type) { return `<span class="badge ${type}">${type.replace(/_/g,' ')}</span>`; }
+
+    async function loadWorkspaces() {
+      try {
+        const res = await fetch('/api/v1/workspaces');
+        const workspaces = await res.json();
+        const sel = document.getElementById('workspace-select');
+        workspaces.forEach(w => {
+          const opt = document.createElement('option');
+          opt.value = w.name; opt.textContent = w.name;
+          sel.appendChild(opt);
+        });
+      } catch (_) {}
+    }
+
+    async function loadScans() {
+      const res = await fetch('/api/v1/scans?limit=20');
+      const scans = await res.json();
+      const wrap = document.getElementById('scan-table-wrap');
+      document.getElementById('stat-scans').textContent = scans.length;
+      if (scans.length) {
+        const latest = scans[0].summary;
+        document.getElementById('stat-drifted').textContent = latest.drifted;
+        document.getElementById('stat-missing').textContent = latest.missing;
+        document.getElementById('stat-unmanaged').textContent = latest.unmanaged || 0;
+        document.getElementById('stat-insync').textContent = latest.in_sync;
+      }
+      if (!scans.length) {
+        wrap.innerHTML = '<div class="empty">No scans yet. Run <code>drift scan --persist</code> or click Run Scan.</div>';
+        return;
+      }
+      wrap.innerHTML = `<table><thead><tr><th>Scan</th><th>Workspace</th><th>Provider</th><th>Drifted</th><th>Unmanaged</th><th>Started</th></tr></thead><tbody>${
+        scans.map(s => `<tr data-id="${s.scan_id}"><td><code>${s.scan_id.slice(0,8)}…</code></td><td>${s.workspace}</td><td>${s.provider}</td><td>${s.summary.drifted}</td><td>${s.summary.unmanaged||0}</td><td>${new Date(s.started_at).toLocaleString()}</td></tr>`).join('')
+      }</tbody></table>`;
+      wrap.querySelectorAll('tr[data-id]').forEach(row => row.addEventListener('click', () => showScan(row.dataset.id)));
+    }
+
+    async function showScan(id) {
+      const res = await fetch(`/api/v1/scans/${id}`);
+      const report = await res.json();
+      document.getElementById('detail').style.display = 'block';
+      document.getElementById('detail-meta').innerHTML = `
+        <p><strong>Scan:</strong> ${report.scan_id} · <strong>State:</strong> ${report.state_source}</p>
+        <p><strong>Summary:</strong> ${report.summary.drifted} drifted / ${report.summary.total_resources} total · ${report.duration}</p>`;
+      document.getElementById('detail-items').innerHTML = `
+        <table><thead><tr><th>Address</th><th>Type</th><th>Status</th><th>Message</th></tr></thead><tbody>${
+          report.items.map(i => `<tr><td>${i.address}</td><td>${i.type}</td><td>${badge(i.drift_type)}</td><td>${i.message||''}</td></tr>`).join('')
+        }</tbody></table><h3>JSON</h3><pre>${JSON.stringify(report, null, 2)}</pre>`;
+    }
+
+    async function triggerScan() {
+      const ws = document.getElementById('workspace-select').value;
+      const body = ws ? JSON.stringify({workspace: ws}) : '{}';
+      const btn = event.target; btn.disabled = true; btn.textContent = 'Scanning…';
+      try {
+        const res = await fetch('/api/v1/scans', {method:'POST', headers:{'Content-Type':'application/json'}, body});
+        if (!res.ok) throw new Error(await res.text());
+        await loadScans();
+        const report = await res.json();
+        showScan(report.scan_id);
+      } catch (e) {
+        alert('Scan failed: ' + e.message);
+      } finally {
+        btn.disabled = false; btn.textContent = '▶ Run Scan';
+      }
+    }
+
+    loadWorkspaces().then(loadScans);
+  </script>
+</body>
+</html>

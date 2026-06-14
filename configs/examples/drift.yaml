@@ -1,0 +1,44 @@
+server:
+  port: 8080
+  database: ./drift.db
+
+webhooks:
+  - url: https://hooks.example.com/drift
+    on_drift: true
+
+workspaces:
+  - name: prod
+    provider: aws
+    region: us-east-1
+    detect_unmanaged: true
+    state:
+      type: s3
+      bucket: my-tf-state
+      key: prod/terraform.tfstate
+      region: us-east-1
+
+  - name: staging
+    provider: azure
+    subscription_id: ${AZURE_SUBSCRIPTION_ID}
+    detect_unmanaged: false
+    state:
+      type: local
+      path: ./staging.tfstate
+
+  - name: gcp-dev
+    provider: gcp
+    project_id: my-gcp-project
+    region: us-central1
+    state:
+      type: local
+      path: ./gcp.tfstate
+
+schedules:
+  - workspace: prod
+    cron: "0 */6 * * *"
+
+drift:
+  detect_unmanaged: false
+  concurrency: 10
+  ignore_rules:
+    - tags_all
